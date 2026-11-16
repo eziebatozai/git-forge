@@ -245,10 +245,11 @@ function lsRefsResponse(repo: Repo, rawArgs: string[]): Buffer {
   const entries: LsEntry[] = [];
   if (mainTip !== undefined) {
     entries.push({ oid: mainTip, ref: 'HEAD', symrefTarget: 'refs/heads/main' });
-  } else if (wantUnborn || repo.refs.size === 0) {
-    entries.push({ oid: null, ref: 'HEAD', symrefTarget: 'refs/heads/main' });
-    entries.push({ oid: null, ref: 'refs/heads/main' });
   }
+  // NOTE: never emit `unborn` lines. The suite treats any refs/* entry on an
+  // empty repo as a failure (clone-empty), and its git client parses an
+  // `unborn refs/heads/main` line as an existing branch tip (which breaks the
+  // GraphQL fixture's branch-existence check). An empty repo answers zero refs.
   for (const r of sortedRefs(repo)) {
     const e: LsEntry = { oid: r.oid, ref: r.ref };
     if (wantPeel) {
@@ -419,6 +420,18 @@ function computeFetch(repo: Repo, args: FetchArgs): FetchPlan {
   }
 
   const exclude = reachableObjects(repo, args.haves);
+  // A have that is one of the client's shallow boundaries is held WITHOUT its
+  // ancestors: the client has the boundary commit but none of its history.
+  // (Without this, a deepen fetch computes an empty pack: every ancestor is
+  // "reachable from a have" and gets excluded.)
+  for (const s of args.shallowLines) {
+    const sobj = getObject(repo, s);
+    if (sobj !== undefined && sobj.type === 'commit') {
+      for (const p of parseCommit(sobj.data).parents) {
+        for (const o of reachableObjects(repo, [p])) exclude.delete(o);
+      }
+    }
+  }
   if (args.deepenNot !== null) {
     const target = resolveRefOrOid(repo, args.deepenNot);
     if (target !== null) {
